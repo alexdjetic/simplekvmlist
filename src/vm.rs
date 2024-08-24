@@ -81,7 +81,21 @@ impl Vm {
         if result.status != 0 {
             "example_ip".to_string()
         } else {
-            result.stdout.trim().to_string() // Remove any trailing newline
+            // Split the stdout by newline and filter out any empty lines
+            let ips: Vec<String> = result
+                .stdout
+                .lines()
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty())
+                .map(|line| line.to_string())
+                .collect();
+
+            // Join the IPs with a separator, e.g., a comma
+            if ips.is_empty() {
+                "no_ip_found".to_string()
+            } else {
+                ips.join(", ")
+            }
         }
     }
 
