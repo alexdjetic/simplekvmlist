@@ -4,14 +4,21 @@ use crate::vm::Vm;
 use clap::{ArgMatches};
 
 pub fn show_vm(vm: &Vm) -> String {
-    format!("> {} : {} <> {} {}", vm.name, vm.vnet, vm.ip, vm.state)
+    let ip_display = if vm.ips.len() > 1 {
+        format!("[{}]", vm.ips.join(", "))
+    } else {
+        vm.ips.first().cloned().unwrap_or_else(|| "no_ip_found".to_string())
+    };
+    format!("> {} : {} <> {} {}", vm.name, vm.vnet, ip_display, vm.state)
 }
 
 pub fn show_vm_full(vm: &Vm) -> String {
     let mut stdout = StandardStream::stdout(ColorChoice::Always);
+    let ip_display = vm.ips.join("\n  ");
+    let mac_display = vm.macs.join("\n  ");
     let mut output = format!(
-        "> {} :\n- vnet: {}\n- ip: {}\n- disk: {}\n- mac: {}\n- config_xml_file: {}\n- state: ",
-        vm.name, vm.vnet, vm.ip, vm.disk, vm.mac, vm.config_xml_file
+        "> {} :\n- vnet: {}\n- ip:\n  {}\n- disk: {}\n- mac:\n  {}\n- config_xml_file: {}\n- state: ",
+        vm.name, vm.vnet, ip_display, vm.disk, mac_display, vm.config_xml_file
     );
 
     match vm.state.as_str() {
