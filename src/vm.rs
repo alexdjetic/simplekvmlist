@@ -1,11 +1,12 @@
 use crate::execute::{execute_cmd, get_permission_valid, CommandResult};
+use std::net::Ipv6Addr;
 
 pub struct Vm {
     pub name: String,
     pub vnet: String,
-    pub ip: String,
+    pub ips: Vec<String>,
     pub disk: String,
-    pub mac: String,
+    pub macs: Vec<String>,
     pub config_xml_file: String,
     raw_output: String,
     pub state: String
@@ -17,9 +18,9 @@ impl Vm {
         let mut vm_instance = Vm {
             name: vm_name,
             vnet: String::new(),
-            ip: String::new(),
+            ips: Vec::new(),
             disk: String::new(),
-            mac: String::new(),
+            macs: Vec::new(),
             config_xml_file: String::new(),
             raw_output: String::new(),
             state: String::new(),
@@ -33,8 +34,8 @@ impl Vm {
         // Get VM information and update fields
         vm_instance.raw_output = vm_instance.get_vm_info();
         vm_instance.vnet = vm_instance.get_vnet();
-        vm_instance.mac = vm_instance.get_mac();
-        vm_instance.ip = vm_instance.get_ip();
+        vm_instance.macs = vm_instance.get_macs();
+        vm_instance.ips = vm_instance.get_ips();
         vm_instance.disk = vm_instance.get_disk();
         vm_instance.config_xml_file = vm_instance.get_xml_file();
         vm_instance.state = vm_instance.get_state();
@@ -59,44 +60,73 @@ impl Vm {
         self.parse_result("Interface")
     }
 
-    // Extract MAC address from raw_output
-    pub fn get_mac(&self) -> String {
-        self.parse_result("MAC")
+    // Extract MAC addresses from raw_output
+    pub fn get_macs(&self) -> Vec<String> {
+        self.raw_output
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 5 && parts[4].contains(':') {
+                    Some(parts[4].to_string())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
-    // Extract IP address using the MAC address
-    pub fn get_ip(&self) -> String {
-        if self.mac.is_empty() {
-            return "unknown".to_string();
-        }
+    // Extract IP addresses using the MAC addresses
+    pub fn get_ips(&self) -> Vec<String> {
+        let mut ips = Vec::new();
 
-        // Construct command to get IP based on MAC address
-        let command = format!(
-            "ip neigh show | awk -v mac='{}' '$5 == mac {{print $1}}'",
-            self.mac
-        );
-
-        let result: CommandResult = execute_cmd(&command);
-
-        if result.status != 0 {
-            "example_ip".to_string()
-        } else {
-            // Split the stdout by newline and filter out any empty lines
-            let ips: Vec<String> = result
-                .stdout
-                .lines()
-                .map(|line| line.trim())
-                .filter(|line| !line.is_empty())
-                .map(|line| line.to_string())
-                .collect();
-
-            // Join the IPs with a separator, e.g., a comma
-            if ips.is_empty() {
-                "no_ip_found".to_string()
-            } else {
-                ips.join(", ")
+        for mac in &self.macs {
+            // Try to get both IPv4 and IPv6 addresses using ip neigh show
+            let ip_command = format!("ip neigh show | grep '{}' | awk '{{print $1}}'", mac);
+            let ip_result: CommandResult = execute_cmd(&ip_command);
+            
+            if ip_result.status == 0 && !ip_result.stdout.trim().is_empty() {
+                ips.extend(ip_result.stdout.lines().map(|s| s.trim().to_string()));
             }
         }
+
+        // If no IPs found or only link-local IPs, try virsh domifaddr
+        if ips.is_empty() || ips.iter().all(|ip| ip.starts_with("fe80::")) {
+            let domifaddr_command = format!("virsh domifaddr {} | tail -n +3 | awk '{{print $4}}' | cut -d'/' -f1", self.name);
+            let domifaddr_result: CommandResult = execute_cmd(&domifaddr_command);
+            
+            if domifaddr_result.status == 0 && !domifaddr_result.stdout.trim().is_empty() {
+                let domifaddr_ips: Vec<String> = domifaddr_result.stdout.lines()
+                    .map(|s| s.trim().to_string())
+                    .filter(|ip| !ip.starts_with("fe80::"))
+                    .collect();
+                if !domifaddr_ips.is_empty() {
+                    ips = domifaddr_ips;
+                }
+            }
+        }
+
+        // If still no non-link-local IPs found, try to get them from the XML configuration
+        if ips.is_empty() || ips.iter().all(|ip| ip.starts_with("fe80::")) {
+            let xml_command = format!("virsh dumpxml {} | grep -E '<interface|<ip address=' | sed -n '/<interface/,/<\\/interface>/p'", self.name);
+            let xml_result: CommandResult = execute_cmd(&xml_command);
+            
+            if xml_result.status == 0 && !xml_result.stdout.trim().is_empty() {
+                let xml_ips: Vec<String> = xml_result.stdout.lines()
+                    .filter(|line| line.contains("<ip address="))
+                    .filter_map(|line| line.split('\'').nth(1))
+                    .filter(|ip| !ip.starts_with("fe80::"))
+                    .map(|ip| ip.to_string())
+                    .collect();
+                if !xml_ips.is_empty() {
+                    ips = xml_ips;
+                }
+            }
+        }
+
+        if ips.is_empty() {
+            ips.push("no_ip_found".to_string());
+        }
+        ips
     }
 
     // Extract disk information using virsh domblklist
